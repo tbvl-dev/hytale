@@ -12,115 +12,81 @@
 
 DOWNLOADER="./hytale-downloader-linux-amd64"
 
-echo "HYTALE_SERVER_SESSION_TOKEN: ${HYTALE_SERVER_SESSION_TOKEN:-<vacío>}"
-echo "HYTALE_SERVER_IDENTITY_TOKEN: ${HYTALE_SERVER_IDENTITY_TOKEN:-<vacío>}"
+# Function to extract downloaded server files
+extract_server_files() {
+    echo "Extrayendo archivos de servidor..."
+    SERVER_ZIP="server.zip"
 
-already_installed() {
-    [ -f "HytaleServer.jar" ] || [ -f "config.json" ]
-}
+    if [ -f "$SERVER_ZIP" ]; then
+        echo "Se encontró descarga: $SERVER_ZIP"
 
-install_game_zip() {
-    if [ ! -f "game.zip" ]; then
-        return 0
-    fi
+        # Extract to current directory
+        unzip -o "$SERVER_ZIP"
 
-    # If the server already exists, do not overwrite it.
-    if already_installed; then
-        return 0
-    fi
+        if [ $? -ne 0 ]; then
+            echo "Error: Fallo al extraer $SERVER_ZIP"
+            exit 1
+        fi
 
-    if ! command -v unzip >/dev/null 2>&1; then
-        echo "Error: 'unzip' no está disponible en la imagen."
-        echo "Instala 'unzip' en la imagen o ajusta el egg para incluirlo."
+        echo "Extracción completa."
+
+        # Move contents from Server folder to current directory
+        if [ -d "Server" ]; then
+            echo "Moviendo archivos..."
+            mv Server/* .
+            rmdir Server
+            echo "✓ Archivos de servidor movidos a la raíz exitosamente."
+        fi
+
+        # Clean up the zip file
+        echo "Limpiando archivos..."
+        rm "$SERVER_ZIP"
+        echo "✓ Limpieza finalizada."
+    else
+        echo "Error: Archivo de servidor no encontrado $SERVER_ZIP"
         exit 1
-    fi
-
-    echo "Extrayendo game.zip..."
-    TMP_DIR=".game_zip_extract"
-    rm -rf "$TMP_DIR"
-    mkdir -p "$TMP_DIR"
-
-    unzip -oq "game.zip" -d "$TMP_DIR"
-
-    # Locate Server folder (can be top-level or nested one directory deep)
-    SERVER_DIR=$(find "$TMP_DIR" -maxdepth 2 -type d -name "Server" 2>/dev/null | head -n 1)
-    if [ -z "$SERVER_DIR" ]; then
-        echo "Error: No se encontró la carpeta 'Server' dentro de game.zip."
-        exit 1
-    fi
-
-    # Locate Assets.zip (keep it as a zip in the root)
-    ASSETS_ZIP=$(find "$TMP_DIR" -maxdepth 2 -type f -name "Assets.zip" 2>/dev/null | head -n 1)
-    if [ -n "$ASSETS_ZIP" ]; then
-        cp -f "$ASSETS_ZIP" "./Assets.zip"
-    fi
-
-    echo "Instalando Server/ en la raíz..."
-    (
-        shopt -s dotglob nullglob
-        cp -a "${SERVER_DIR}/"* .
-    )
-
-    rm -rf "$TMP_DIR"
-}
-
-download_and_install_if_needed() {
-    if already_installed; then
-        echo "Detectado servidor ya instalado (HytaleServer.jar/config.json). Omitiendo descarga."
-        return 0
-    fi
-
-    # Ensure credentials exist (first-time setup)
-    if [ ! -f ".hytale-downloader-credentials.json" ]; then
-        echo "Credentials file not found, running initial setup..."
-        echo "Starting Hytale downloader..."
-        $DOWNLOADER -check-update
-        $DOWNLOADER
-    fi
-
-    echo "Descargando server una sola vez..."
-    $DOWNLOADER -check-update
-    $DOWNLOADER -download-path game.zip
-
-    if [ -f "game.zip" ]; then
-        install_game_zip
-        rm -f "game.zip"
     fi
 }
 
 # Check if the downloader exists
 if [ ! -f "$DOWNLOADER" ]; then
-    echo "Error: Hytale downloader not found!"
-    echo "Please run the installation script first."
+    echo "Error: Descargador Hytale no encontrado!"
+    echo "Solicita la reinstalación de tu servidor en nuestras plataformas de atención."
     exit 1
 fi
 
 # Check if the downloader is executable
 if [ ! -x "$DOWNLOADER" ]; then
-    echo "Setting executable permissions..."
+    echo "Estableciendo permisos ..."
     chmod +x "$DOWNLOADER"
 fi
 
-# Descargar/instalar solo si aún no existe instalación
-download_and_install_if_needed
+# Check if credentials file exists, if not run the updater
+if [ ! -f ".hytale-downloader-credentials.json" ]; then
+    echo "Credenciales no encontradas, actualizando archivos de servidor..."
+    echo "Descargando Hytale..."
+    $DOWNLOADER -check-update
+    $DOWNLOADER -patchline $PATCHLINE -download-path server.zip
+    extract_server_files
+fi
+
+# Run automatic update if enabled
+if [ "${AUTOMATIC_UPDATE}" = "1" ]; then
+    echo "Descargando Hytale..."
+    $DOWNLOADER -check-update
+    $DOWNLOADER -patchline $PATCHLINE -download-path server.zip
+    extract_server_files
+fi
 
 # Check if server files were downloaded correctly
 if [ ! -f "HytaleServer.jar" ]; then
-    echo "Error: HytaleServer.jar not found!"
-    echo "Server files were not downloaded correctly."
+    echo "Error: Servidor de Hytale no encontrado!"
+    echo "Archivos de servidor no se han descargado correctamente, ponte en contacto con nosotros."
     exit 1
 fi
 
-# If tokens + owner uuid are provided, use them directly and skip device auth flow.
-if [ -n "${HYTALE_SERVER_SESSION_TOKEN}" ] && [ -n "${HYTALE_SERVER_IDENTITY_TOKEN}" ] && [ -n "${HYTALE_SERVER_OWNER_UUID}" ]; then
-    SESSION_TOKEN="${HYTALE_SERVER_SESSION_TOKEN}"
-    IDENTITY_TOKEN="${HYTALE_SERVER_IDENTITY_TOKEN}"
-    PROFILE_UUID="${HYTALE_SERVER_OWNER_UUID}"
-
-    echo "Usando tokens proporcionados por variables de entorno."
-else
-    # Obtain authentication tokens
-    echo "Obtaining authentication tokens..."
+# Obtain authentication tokens
+echo "Obteniendo tokens de autenticación..."
 
 # Step 1: Request device code
 AUTH_RESPONSE=$(curl -s -X POST "https://oauth.accounts.hytale.com/oauth2/device/auth" \
@@ -136,18 +102,18 @@ POLL_INTERVAL=$(echo "$AUTH_RESPONSE" | jq -r '.interval')
 # Display authentication banner
 echo ""
 echo "╔═════════════════════════════════════════════════════════════════════════════╗"
-echo "║                       HYTALE SERVER AUTHENTICATION REQUIRED                 ║"
+echo "║                       SE REQUIERE AUTENTICACIÓN DE USUARIO                  ║"
 echo "╠═════════════════════════════════════════════════════════════════════════════╣"
 echo "║                                                                             ║"
-echo "║  Please authenticate the server by visiting the following URL:              ║"
+echo "║  Por favor autentica tu servidor visitando el siguiente link:               ║"
 echo "║                                                                             ║"
 echo "║  $VERIFICATION_URI  ║"
 echo "║                                                                             ║"
-echo "║  1. Click the link above or copy it to your browser                         ║"
-echo "║  2. Sign in with your Hytale account                                        ║"
-echo "║  3. Authorize the server                                                    ║"
+echo "║  1. Clickea el link de arriba o cópialo a tu navegador                      ║"
+echo "║  2. Inicia sesión con tu cuenta Hytale                                      ║"
+echo "║  3. Autoriza el servidor                                                    ║"
 echo "║                                                                             ║"
-echo "║  Waiting for authentication...                                              ║"
+echo "║  Esperando autenticación...                                                 ║"
 echo "║                                                                             ║"
 echo "╚═════════════════════════════════════════════════════════════════════════════╝"
 echo ""
@@ -167,22 +133,22 @@ while [ -z "$ACCESS_TOKEN" ]; do
     ERROR=$(echo "$TOKEN_RESPONSE" | jq -r '.error // empty')
 
     if [ "$ERROR" = "authorization_pending" ]; then
-        echo "Still waiting for authentication..."
+        echo "Aún esperando autenticación..."
         continue
     elif [ -n "$ERROR" ]; then
-        echo "Authentication error: $ERROR"
+        echo "Error de autenticación: $ERROR"
         exit 1
     else
         # Successfully authenticated
         ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token')
         echo ""
-        echo "✓ Authentication successful!"
+        echo "✓ Autenticación exitosa!"
         echo ""
     fi
 done
 
 # Fetch available game profiles
-echo "Fetching game profiles..."
+echo "Obteniendo perfiles de juego..."
 
 PROFILES_RESPONSE=$(curl -s -X GET "https://account-data.hytale.com/my-account/get-profiles" \
   -H "Authorization: Bearer $ACCESS_TOKEN")
@@ -191,36 +157,36 @@ PROFILES_RESPONSE=$(curl -s -X GET "https://account-data.hytale.com/my-account/g
 PROFILES_COUNT=$(echo "$PROFILES_RESPONSE" | jq '.profiles | length')
 
 if [ "$PROFILES_COUNT" -eq 0 ]; then
-    echo "Error: No game profiles found. You need to purchase Hytale to run a server."
+    echo "Error: No se han encontrado perfiles. Debes comprar Hytale para tener tu servidor o ponte contáctate con nosotros."
     exit 1
 fi
 
 # Select profile based on GAME_PROFILE variable
 if [ -n "$GAME_PROFILE" ]; then
     # User specified a profile username, find matching UUID
-    echo "Looking for profile: $GAME_PROFILE"
+    echo "Buscando perfil: $GAME_PROFILE"
     PROFILE_UUID=$(echo "$PROFILES_RESPONSE" | jq -r ".profiles[] | select(.username == \"$GAME_PROFILE\") | .uuid")
 
     if [ -z "$PROFILE_UUID" ] || [ "$PROFILE_UUID" = "null" ]; then
-        echo "Error: Profile '$GAME_PROFILE' not found."
-        echo "Available profiles:"
+        echo "Error: Perfil '$GAME_PROFILE' no encontrado."
+        echo "Perfiles disponibles:"
         echo "$PROFILES_RESPONSE" | jq -r '.profiles[] | "  - \(.username)"'
         exit 1
     fi
 
-    echo "✓ Using profile: $GAME_PROFILE (UUID: $PROFILE_UUID)"
+    echo "✓ Usando perfil: $GAME_PROFILE (UUID: $PROFILE_UUID)"
 else
     # Use first profile from the list
     PROFILE_UUID=$(echo "$PROFILES_RESPONSE" | jq -r '.profiles[0].uuid')
     PROFILE_USERNAME=$(echo "$PROFILES_RESPONSE" | jq -r '.profiles[0].username')
 
-    echo "✓ Using default profile: $PROFILE_USERNAME (UUID: $PROFILE_UUID)"
+    echo "✓ Usando perfil por defecto: $PROFILE_USERNAME (UUID: $PROFILE_UUID)"
 fi
 
 echo ""
 
 # Create game server session
-echo "Creating game server session..."
+echo "Creando sesión de servidor..."
 
 SESSION_RESPONSE=$(curl -s -X POST "https://sessions.hytale.com/game-session/new" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -229,8 +195,8 @@ SESSION_RESPONSE=$(curl -s -X POST "https://sessions.hytale.com/game-session/new
 
 # Validate JSON response
 if ! echo "$SESSION_RESPONSE" | jq empty 2>/dev/null; then
-    echo "Error: Invalid JSON response from game session creation"
-    echo "Response: $SESSION_RESPONSE"
+    echo "Error: Error al crear la sesión de servidor"
+    echo "Respuesta: $SESSION_RESPONSE"
     exit 1
 fi
 
@@ -239,17 +205,15 @@ SESSION_TOKEN=$(echo "$SESSION_RESPONSE" | jq -r '.sessionToken')
 IDENTITY_TOKEN=$(echo "$SESSION_RESPONSE" | jq -r '.identityToken')
 
 if [ -z "$SESSION_TOKEN" ] || [ "$SESSION_TOKEN" = "null" ]; then
-    echo "Error: Failed to create game server session"
-    echo "Response: $SESSION_RESPONSE"
+    echo "Error: Fallo al crear sesión de servidor"
+    echo "Respuesta: $SESSION_RESPONSE"
     exit 1
 fi
 
-echo "✓ Game server session created successfully!"
+echo "✓ Sesión de servidor de Hytale creada exitosamente!"
 echo ""
 
-fi
-
-echo "Starting Hytale server..."
+echo "Iniciando servidor Hytale..."
 
 # Build the Java command
 JAVA_CMD="java"
